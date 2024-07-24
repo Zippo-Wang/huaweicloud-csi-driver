@@ -47,9 +47,10 @@ type nodeServer struct {
 }
 
 const (
-	credentialDir = "/var/lib/csi"
-	SocketPath    = "/var/lib/csi/connector.sock"
-	perm          = 0600
+	credentialDir      = "/var/lib/csi"
+	credentialFileName = ".passwd-s3fs"
+	SocketPath         = "/var/lib/csi/connector.sock"
+	perm               = 0600
 )
 
 func (ns *nodeServer) NodeStageVolume(_ context.Context, req *csi.NodeStageVolumeRequest) (
@@ -75,7 +76,7 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	}
 
 	credentials := ns.Driver.cloud
-	volume, err := services.GetParallelFSBucket(credentials, volumeID)
+	volume, err := services.GetObsBucket(credentials, volumeID)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +94,7 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		return nil, status.Errorf(codes.Internal, "Failed to make dir: %s, error: %v", targetPath, err)
 	}
 
-	credentialFile := fmt.Sprintf("%s/%s", credentialDir, uuid.New().String())
+	credentialFile := filepath.Join(credentialDir, uuid.New().String(), credentialFileName)
 	accessKey := ns.Driver.cloud.Global.AccessKey
 	secretKey := ns.Driver.cloud.Global.SecretKey
 	if err := createCredentialFile(accessKey, secretKey, credentialFile); err != nil {
@@ -101,14 +102,9 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	}
 	defer deleteCredentialFile(credentialFile)
 
-	mountFlags := []string{"big_writes", "max_write=131072", "use_ino"}
+	mountFlags := []string{"big_writes", "max_write=131072", "nonempty"}
 	if mnt := req.GetVolumeCapability().GetMount(); mnt != nil {
-		for _, v := range mnt.GetMountFlags() {
-			if v == "passwd_file" || v == "use_ino" {
-				continue
-			}
-			mountFlags = append(mountFlags, v)
-		}
+		mountFlags = append(mountFlags, mnt.GetMountFlags()...)
 	}
 
 	parameters := map[string]string{
@@ -238,7 +234,7 @@ func (ns *nodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolu
 	log.Infof("NodeGetVolumeStats: stats info :%s", protosanitizer.StripSecrets(*stats))
 	capacity, usedBytes := stats.TotalBytes, stats.UsedBytes
 
-	bucket, err := services.GetParallelFSBucket(ns.Driver.cloud, volumeID)
+	bucket, err := services.GetObsBucket(ns.Driver.cloud, volumeID)
 	if err != nil {
 		return nil, err
 	}
